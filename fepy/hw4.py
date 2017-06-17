@@ -41,7 +41,8 @@ class Table:
 
 
 class Node:
-    def __init__(self, log_price, conditional_var, risk_free_rate, gamma, n_split, d=0, loc=0, prev_loc=0, h=None):
+    def __init__(self, log_price, conditional_var, risk_free_rate, gamma, n_split, d=0, loc=0, prev_loc=0,
+                 h=None):
 
         self.loc = loc
         self.prev_loc = prev_loc
@@ -52,6 +53,7 @@ class Node:
         self.S = np.exp(self.y)
         self.r = risk_free_rate
         self.v = conditional_var
+
         if h is None:
             h = np.sqrt(self.v)
         self.h = h
@@ -98,7 +100,7 @@ class Node:
 
         :param eta: 
         :return: 
-            [p_u, p_m, p_d]
+            [p_d, p_m, p_u]
         """
 
         if eta == 1 and self.h == self.grid:
@@ -107,7 +109,7 @@ class Node:
             factor_1 = self.v / (2 * eta ** 2 * self.grid ** 2)
         factor_2 = (self.r - self.v / 2) * np.sqrt(self.n) / (2 * eta * self.grid)
 
-        return np.array([factor_1 + factor_2, 1 - 2 * factor_1, factor_1 - factor_2])
+        return np.array([factor_1 - factor_2, 1 - 2 * factor_1, factor_1 + factor_2])
 
     def __str__(self):
         return "loc={loc}, prev={_in}, direction={d}, price = {p}, value={v}, h = {h}, grid={g}, eta={e}, o={o}, prob_list={pl} ".format(
@@ -123,15 +125,11 @@ class Node:
 
 
 def a_p_terminal_value_func(node, X):
-    return max([0, node.S - X])
-
-
-def a_p_value_func(node, X):
-    return max([0, node.S - X])
+    return max([0, X - node.S])
 
 
 class Tree:
-    def __init__(self, E, r, gamma, n, K, b_0, b_1, b_2, c, root):
+    def __init__(self, E, r, gamma, n, K, b_0, b_1, b_2, c, root, X):
 
         self.E = E
         self.r = r
@@ -142,6 +140,8 @@ class Tree:
         self.b_2 = b_2
         self.c = c
         self.K = K
+
+        self.X = X
 
         self.min_idx = 0
         self.max_idx = self.K - 1
@@ -188,12 +188,14 @@ class Tree:
 
     def build_tree(self):
         for i in range(self.E):
+            # print("build ", i)
             self.fulfill_layer(i)
             for j in self.layers[i]:
                 for node_idx in self.layers[i][j]:
                     node = self.layers[i][j][node_idx]
                     for d in [-1, 0, 1]:
-                        tree.add_to_layer(i + 1, node, d)
+                        self.add_to_layer(i + 1, node, d)
+        self.fulfill_layer(self.E)
 
     def fulfill_layer(self, idx):
 
@@ -207,7 +209,6 @@ class Tree:
                 h = min_v + i * (max_v - min_v) / (self.K - 1)
                 layer[j][i] = Node(y, h, r, gamma, n)
 
-
     def fulfill_tree(self):
         for layer in self.layers:
             for j in sorted(layer):
@@ -219,18 +220,16 @@ class Tree:
                     h = min_v + i * (max_v - min_v) / (self.K - 1)
                     layer[j][i] = Node(y, h, r, gamma, n)
 
-
     def back_induction(self):
         for j in self.layers[self.E]:
             group = self.layers[self.E][j]
             for _t in group:
                 terminal_node = group[_t]
-                terminal_node.evaluate(a_p_terminal_value_func, 100)
+                terminal_node.evaluate(a_p_terminal_value_func, self.X)
 
         for i in reversed(range(self.E)):
-            print("i", i)
+            # print("back induction", i)
             for j in self.layers[i]:
-                print(j)
                 group = self.layers[i][j]
                 for _t in group:
                     node = group[_t]
@@ -241,12 +240,15 @@ class Tree:
                     prob_list = node.prob_list
 
                     for k in range(3):
-                        print(i + 1, o_node[k])
                         value += prob_list[k] * self.get_interpolation(self.layers[i + 1][o_node[k]], v)
 
-                    node.value = value
-            print("---")
+                    # discount
+                    value /= np.exp(self.r)
 
+                    value = max([value, self.X - node.S])
+
+                    node.value = value
+                    # print("---")
 
     def get_interpolation(self, group, v):
         _i = self.find_interval(group, v)
@@ -260,7 +262,6 @@ class Tree:
         ratio = (group[_i].v - v) / (group[_i].v - group[_i - 1].v)
         return ratio * group[_i - 1].value + (1 - ratio) * group[_i].value
 
-
     def find_interval(self, group, v):
         _i = 0
         while _i < self.K:
@@ -269,7 +270,6 @@ class Tree:
             _i += 1
 
         return min([_i, self.K - 1])
-
 
     def __str__(self):
         c_str = ""
@@ -284,109 +284,47 @@ class Tree:
 
         return c_str
 
+DEBUG = False
 
-E = 3
-K = 3
-n = 1
-gamma, r = 0.010469, 0
-b_0, b_1, b_2, c = 0.000006575, 0.9, 0.04, 0
+def Ritchken_Trevor_Algorithm(E, r, S, h, b_0, b_1, b_2, c, X, n, K):
+    gamma = h
+    y = np.log(S)
+    r = r / 365
 
-root = Node(4.60517, 0.0001096, r, gamma, n, h=0.010469)
+    root = Node(y, h ** 2, r, gamma, n, h)
+    tree = Tree(E, r, gamma, n, K, b_0, b_1, b_2, c, root, X)
+    tree.build_tree()
+    tree.back_induction()
+    if DEBUG:
+        print(tree)
+    print("The price is ", tree.layers[0][0][0].value)
 
-tree = Tree(E, r, gamma, n, K, b_0, b_1, b_2, c, root)
 
-tree.build_tree()
+Ritchken_Trevor_Algorithm(30, 0.01, 100, 0.010469, 0.000006575, 0.9, 0.04, 0, 100, 2, 2)
+#
+# X = 100
+# E = 50
+# r = 0.0
+# S = 100
+# h, b_0, b_1, b_2, c = 0.010469, 0.000006575, 0.9, 0.04, 0
+# # per day
+# n = 2
+# K = 2
+#
+# gamma = h
+# y = np.log(S)
+#
+# # r = (np.exp(r * E / 360) - 1) / 100
+# r = r / 365
+#
+# print(h ** 2, r, gamma, n)
+#
+# print("build root")
+# root = Node(y, h ** 2, r, gamma, n, h)
+# print("build done")
+#
+# tree = Tree(E, r, gamma, n, K, b_0, b_1, b_2, c, root, X)
+#
+# tree.build_tree()
 # tree.back_induction()
-print(tree)
-
-
-# gamma = 0.010469
-# n = 1
-# r = 0
-# node_0_0 = Node(4.60517, 0.0001096, r, gamma, n, h=0.010469)
-# # node_0_0.find_eta()
-# print(node_0_0)
-# print("-----------")
-#
-# b_0, b_1, b_2, c = 0.000006575, 0.9, 0.04, 0
-# node_1_0 = Node(node_0_0.get_log_price(1), node_0_0.get_conditional_var(1, b_0, b_1, b_2, c), r, gamma, n)
-# print(node_1_0)
-# print("-----------")
-#
-# node_2_0 = Node(node_1_0.get_log_price(1), node_1_0.get_conditional_var(1, b_0, b_1, b_2, c), r, gamma, n)
-# print(node_2_0)
-# print("-----------")
-#
-# node_3_0 = Node(node_2_0.get_log_price(1), node_2_0.get_conditional_var(1, b_0, b_1, b_2, c), r, gamma, n)
-# print(node_3_0)
-# print("-----------")
-
-
-# print(root.get_log_price(0))
-# print(root.get_log_price(-1))
-
-#
-# def main(E, r, S, h0, b0, b1, b2, c, X, n1, n2):
-#     """
-#
-#     :param E: (days before expiration)
-#     :param r: (annual interest rate)
-#     :param S: (stock price at time 0)
-#     :param h0:
-#     :param b0:
-#     :param b1:
-#     :param b2:
-#     :param c:
-#     :param X: (strike price)
-#     :param n1: (number of partitions per day)
-#     :param n2: (number of variances per node)
-#     :return:
-#     """
-#     y = np.log(S)
-#
-#
-# if __name__ == "__main__":
-#     main(100, 0, 1, 0.0001096, 0.0049, 0.000006575, 0.9, 0.04, 0)
-def get_min_eta(h, c_gamma):
-    return int(np.sqrt(h) / c_gamma)
-
-
-def find_successor_stock_prices(y, h, gamma, n_values=1):
-    """
-
-    :param y: 
-    :param h: 
-    :param eta: 
-    :param n_values: [1;in this case, the tri-nomial tree]
-        total 2n+1 points
-    :return: 
-
-    # price_list = get_derived_prices(4.60517, 0.000196, 0.010469, n_values=1)
-    # print(price_list)
-    # [ 4.594701  4.60517   4.615639]
-    """
-    _list = np.array([j for j in range(-n_values, n_values + 1)])
-    return y + gamma * _list
-
-
-def establish_the_normalized_innovation(eta, gamma, r_f, h, n_values=1):
-    _list = np.array([j for j in range(-n_values, n_values + 1)])
-    return (eta * gamma * _list - (r_f - h / 2)) / np.sqrt(h)
-
-
-def calculate_variance_for_the_next_period(h, e, b0, b1, b2, c):
-    return b0 + b1 * h + b2 * h * (e - c) ** 2
-
-
-def compute_associated_probability(h, gamma, eta, r_f, n):
-    """
-    analytics solution for n_values=1 
-    a.k.a 
-    using 3 r.v. to approximate normal distribution
-    :param n_values: 
-    :return: 
-    """
-    factor_1 = h / (2 * eta ** 2 * gamma ** 2)
-    factor_2 = (r_f - h / 2) * np.sqrt(n) / (2 * eta * gamma)
-
-    return np.array([factor_1 + factor_2, 1 - factor_1, factor_1 - factor_2])
+# print(tree.layers[0][0][0].value)
