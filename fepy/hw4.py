@@ -1,53 +1,19 @@
 import numpy as np
 
 
-class Entry:
-    def __init__(self, h, v):
-        self.h = h
-        self.v = v
-
-    def __str__(self):
-        return "h={h} C={C}".format(h=self.h, C=self.v)
-
-
-class Table:
-    def __init__(self, K):
-        # h in ascending
-        self.K = K
-        self.entry_arr = []
-
-    def add_entry(self, en):
-        self.entry_arr.append(en)
-        self.entry_arr.sort(key=lambda x: x.h)
-
-    def get_interpolation(self, h):
-        _i = self.find_interval(h)
-
-        if _i == 0 or _i == self.K - 1:
-            return self.entry_arr[_i].v
-
-        if self.entry_arr[_i - 1].h == h:
-            return self.entry_arr[_i].v
-
-        ratio = (self.entry_arr[_i].h - h) / (self.entry_arr[_i].h - self.entry_arr[_i - 1].h)
-        return ratio * self.entry_arr[_i - 1].v + (1 - ratio) * self.entry_arr[_i].v
-
-    def find_interval(self, h):
-        _i = 0
-        while h < self.entry_arr[_i].h and h < self.K:
-            _i += 1
-
-        return max[_i, self.K - 1]
-
-
 class Node:
+    __id = 0
+
     def __init__(self, log_price, conditional_var, risk_free_rate, gamma, n_split, d=0, loc=0, prev_loc=0,
                  h=None):
 
         self.loc = loc
         self.prev_loc = prev_loc
 
-        self.value = 0
+        self.id = Node.__id
+        Node.__id += 1
+
+        self.value = 0.0
         self.d = d
         self.y = log_price
         self.S = np.exp(self.y)
@@ -60,22 +26,22 @@ class Node:
         self.gamma = gamma
         self.n = n_split
 
-        self.in_mean = self.y + self.r - 0.5 * self.v
-        self.in_var = self.v
-        self.grid = float(gamma / n_split)
+        self.grid = float(gamma / np.sqrt(self.n))
         self.eta, self.prob_list = self.find_eta()
 
         self.in_node = []
-        self.out_node = [self.loc + d * self.eta for d in [-1, 0, 1]]
+        self.out_node = [self.loc + d * self.eta for d in range(-self.n, self.n + 1)]
 
     def get_principle_parameter(self):
-        return self.y, self.v, self.r, self.gamma, self.n
+        return self.y, self.loc, self.v, self.r, self.gamma, self.n
 
     def find_eta(self, eta=None):
-
         eta = int(np.ceil(self.h / self.gamma))
 
         prob_list = self.compute_associated_probability(eta)
+        # print(prob_list)
+        # print(eta)
+        # exit()
 
         while np.any(prob_list < 0):
             eta += 1
@@ -91,8 +57,8 @@ class Node:
         return self.y + j * self.eta * self.grid
 
     def get_conditional_var(self, j, b_0, b_1, b_2, c):
-        e = (j * self.eta * self.grid - (self.r - 0.5 * self.v)) / np.sqrt(self.v)
-        return b_0 + b_1 * self.v + b_2 * self.v * np.square(e - c)
+        e = (j * self.eta * self.grid - (self.r - 0.5 * self.v)) / self.h
+        return b_0 + b_1 * self.v + b_2 * self.v * (e - c) ** 2
 
     def compute_associated_probability(self, eta):
         """  
@@ -106,26 +72,31 @@ class Node:
         if eta == 1 and self.h == self.grid:
             factor_1 = 0.5
         else:
-            factor_1 = self.v / (2 * eta ** 2 * self.grid ** 2)
-        factor_2 = (self.r - self.v / 2) * np.sqrt(self.n) / (2 * eta * self.grid)
+            factor_1 = self.v / (2 * eta ** 2 * self.gamma ** 2)
+        factor_2 = (self.r - self.v / 2) / (2 * eta * self.gamma * np.sqrt(self.n))
 
         return np.array([factor_1 - factor_2, 1 - 2 * factor_1, factor_1 + factor_2])
 
     def __str__(self):
-        return "loc={loc}, prev={_in}, direction={d}, price = {p}, value={v}, h = {h}, grid={g}, eta={e}, o={o}, prob_list={pl} ".format(
+        return "loc={loc}, prev={_in}, direction={d}, price = {p}, value={v}, h = {h}, grid={g}, eta={e}, o={o}, prob_list={pl}, pre_node={pre} ".format(
             loc=self.loc,
             p=self.S,
-            h=round(self.v * 100000, 4),
+            h=self.v,
             d=self.d,
             v=self.value,
             o=self.out_node,
             g=self.grid,
             e=self.eta,
+            pre=self.prev_loc,
             pl=self.prob_list, _in=self.prev_loc)
 
 
 def a_p_terminal_value_func(node, X):
     return max([0, X - node.S])
+
+
+def e_c_terminal_value_func(node, X):
+    return max([0, node.S - X])
 
 
 class Tree:
@@ -167,6 +138,9 @@ class Tree:
 
     def add_to_layer(self, layer_index, src, d):
 
+        # if np.abs(d) > 1:
+        #     return
+
         j = src.loc + d * src.eta
         _node = self.make_a_node(src, d)
 
@@ -176,12 +150,12 @@ class Tree:
             self.layers[layer_index][j] = dict()
 
             self.layers[layer_index][j][self.min_idx] = _node
-            self.layers[layer_index][j][self.max_idx] = _node
+            self.layers[layer_index][j][self.max_idx] = self.make_a_node(src, d)
         else:
-            if self.layers[layer_index][j][self.min_idx].h > _node.h:
+            if self.layers[layer_index][j][self.min_idx].v > _node.v:
                 self.layers[layer_index][j][self.min_idx] = _node
 
-            if self.layers[layer_index][j][self.max_idx].h < _node.h:
+            if self.layers[layer_index][j][self.max_idx].v < _node.v:
                 self.layers[layer_index][j][self.max_idx] = _node
 
                 # self.layers[layer_index][j].append(_node)
@@ -193,7 +167,7 @@ class Tree:
             for j in self.layers[i]:
                 for node_idx in self.layers[i][j]:
                     node = self.layers[i][j][node_idx]
-                    for d in [-1, 0, 1]:
+                    for d in range(-self.n, self.n + 1):
                         self.add_to_layer(i + 1, node, d)
         self.fulfill_layer(self.E)
 
@@ -201,31 +175,19 @@ class Tree:
 
         layer = self.layers[idx]
         for j in sorted(layer):
-            # self.y, self.h, self.r, self.gamma, self.n
-
-            y, min_v, r, gamma, n = layer[j][self.min_idx].get_principle_parameter()
-            y, max_v, r, gamma, n = layer[j][self.max_idx].get_principle_parameter()
+            y, loc, min_v, r, gamma, n = layer[j][self.min_idx].get_principle_parameter()
+            y, loc, max_v, r, gamma, n = layer[j][self.max_idx].get_principle_parameter()
             for i in range(1, self.K - 1):
                 h = min_v + i * (max_v - min_v) / (self.K - 1)
-                layer[j][i] = Node(y, h, r, gamma, n)
-
-    def fulfill_tree(self):
-        for layer in self.layers:
-            for j in sorted(layer):
-                # self.y, self.h, self.r, self.gamma, self.n
-
-                y, min_v, r, gamma, n = layer[j][self.min_idx].get_principle_parameter()
-                y, max_v, r, gamma, n = layer[j][self.max_idx].get_principle_parameter()
-                for i in range(1, self.K - 1):
-                    h = min_v + i * (max_v - min_v) / (self.K - 1)
-                    layer[j][i] = Node(y, h, r, gamma, n)
+                layer[j][i] = Node(y, h, r, gamma, n, loc=loc)
 
     def back_induction(self):
         for j in self.layers[self.E]:
             group = self.layers[self.E][j]
             for _t in group:
                 terminal_node = group[_t]
-                terminal_node.evaluate(a_p_terminal_value_func, self.X)
+                # terminal_node.evaluate(a_p_terminal_value_func, self.X)
+                terminal_node.evaluate(e_c_terminal_value_func, self.X)
 
         for i in reversed(range(self.E)):
             # print("back induction", i)
@@ -235,31 +197,100 @@ class Tree:
                     node = group[_t]
 
                     value = 0
-                    v = node.v
                     o_node = node.out_node
                     prob_list = node.prob_list
 
-                    for k in range(3):
-                        value += prob_list[k] * self.get_interpolation(self.layers[i + 1][o_node[k]], v)
+                    # [p_d, p_m, p_u]
+                    # p_d = prob_list[0]
+                    # p_m = prob_list[1]
+                    # p_u = prob_list[2]
+
+                    # prob_dict = dict()
+                    #
+                    # for k in range(-self.n, 1 + self.n):
+                    #     prob_dict[k] = 0
+                    #
+                    # prob_dict[-1] = p_d = prob_list[0]
+                    # prob_dict[0] = p_m = prob_list[1]
+                    # prob_dict[1] = p_u = prob_list[2]
+                    #
+                    # for _ in range(1, self.n):
+                    #
+                    #     tmp = prob_dict.copy()
+                    #     for k in range(-self.n, 1 + self.n):
+                    #         prob_dict[k] = 0
+                    #
+                    #     for k in range(-1 * _, 1 + _):
+                    #         prob_dict[k + 1] += tmp[k] * p_u
+                    #         prob_dict[k - 1] += tmp[k] * p_d
+                    #         prob_dict[k] += tmp[k] * p_m
+
+                    print(i, j)
+                    p_d = prob_list[0]
+                    p_m = prob_list[1]
+                    p_u = prob_list[2]
+                    prob_arr = []
+                    for m in range(2 * self.n + 1):
+                        prob_arr.append(0)
+
+                    prob_arr[2] = p_u
+                    prob_arr[1] = p_m
+                    prob_arr[0] = p_d
+
+                    print("p_u", p_u)
+                    print("p_m", p_m)
+                    print("p_d", p_d)
+
+                    l = self.n - 1
+                    while l > 0:
+                        for m in reversed(range(2 * (self.n - l) + 1)):
+                            prob_arr[m + 2] = prob_arr[m + 2] + prob_arr[m] * p_u
+                            prob_arr[m + 1] = prob_arr[m + 1] + prob_arr[m] * p_m
+                            prob_arr[m] = prob_arr[m] * p_d
+
+                        l -= 1
+                    print("----p_all----")
+
+                    print(prob_arr)
+                    print("=============")
+                    prob_dict = dict()
+                    for _ in range(2 * self.n + 1):
+                        prob_dict[_ - self.n] = prob_arr[_]
+
+                    for k in range(-self.n, 1 + self.n):
+                        if i == 1:
+                            print("*********", i, j, "**********")
+
+                        v = node.get_conditional_var(k, self.b_0, self.b_1, self.b_2, self.c)
+                        # v = node.v
+                        # print(i, j, "get_interpolation", i + 1, o_node[k])
+                        value += prob_dict[k] * self.get_interpolation(self.layers[i + 1][o_node[k + self.n]], v,
+                                                                       log=i == 1)
 
                     # discount
-                    value /= np.exp(self.r)
+                    value = value / np.exp(self.r)
 
-                    value = max([value, self.X - node.S])
+                    # value = max([value, self.X - node.S])
 
-                    node.value = value
+                    self.layers[i][j][_t].value = value
                     # print("---")
 
-    def get_interpolation(self, group, v):
+    def get_interpolation(self, group, v, log=False):
+
         _i = self.find_interval(group, v)
 
-        if _i == 0 or _i == self.K - 1:
-            return group[_i].value
+        if _i > self.K - 1:
+            return group[self.K - 1].value
+
+        if _i == 0:
+            return group[0].value
 
         if group[_i - 1].v == v:
-            return group[_i].value
+            return group[_i - 1].value
 
         ratio = (group[_i].v - v) / (group[_i].v - group[_i - 1].v)
+
+        # print(ratio)
         return ratio * group[_i - 1].value + (1 - ratio) * group[_i].value
 
     def find_interval(self, group, v):
@@ -269,7 +300,7 @@ class Tree:
                 break
             _i += 1
 
-        return min([_i, self.K - 1])
+        return _i
 
     def __str__(self):
         c_str = ""
@@ -284,14 +315,17 @@ class Tree:
 
         return c_str
 
-DEBUG = False
+
+DEBUG = True
+
 
 def Ritchken_Trevor_Algorithm(E, r, S, h, b_0, b_1, b_2, c, X, n, K):
-    gamma = h
+    gamma = 0.01046900186264192
     y = np.log(S)
     r = r / 365
 
-    root = Node(y, h ** 2, r, gamma, n, h)
+    root = Node(y, 0.0001096, r, gamma, n, h)
+    print(root.grid)
     tree = Tree(E, r, gamma, n, K, b_0, b_1, b_2, c, root, X)
     tree.build_tree()
     tree.back_induction()
@@ -300,31 +334,4 @@ def Ritchken_Trevor_Algorithm(E, r, S, h, b_0, b_1, b_2, c, X, n, K):
     print("The price is ", tree.layers[0][0][0].value)
 
 
-Ritchken_Trevor_Algorithm(30, 0.01, 100, 0.010469, 0.000006575, 0.9, 0.04, 0, 100, 2, 2)
-#
-# X = 100
-# E = 50
-# r = 0.0
-# S = 100
-# h, b_0, b_1, b_2, c = 0.010469, 0.000006575, 0.9, 0.04, 0
-# # per day
-# n = 2
-# K = 2
-#
-# gamma = h
-# y = np.log(S)
-#
-# # r = (np.exp(r * E / 360) - 1) / 100
-# r = r / 365
-#
-# print(h ** 2, r, gamma, n)
-#
-# print("build root")
-# root = Node(y, h ** 2, r, gamma, n, h)
-# print("build done")
-#
-# tree = Tree(E, r, gamma, n, K, b_0, b_1, b_2, c, root, X)
-#
-# tree.build_tree()
-# tree.back_induction()
-# print(tree.layers[0][0][0].value)
+Ritchken_Trevor_Algorithm(30, 0.01, 100, 0.01046900186264192, 0.000006575, 0.9, 0.04, 0, 100, 3, 3)
